@@ -71,6 +71,15 @@ options:
       - You cannot use robot accounts or teams for the O(creator) parameter.
         You can only use regular user accounts.
     type: str
+  apply_to_all_repositories:
+    description:
+      - If V(true), then the module applies the default permission to all
+        existing repositories in the organization, in addition to setting it
+        as the default for new repositories.
+      - If V(false), then the module only sets the default permission for new
+        repositories.
+    type: bool
+    default: false
   state:
     description:
       - If V(absent), then the module deletes the default permission.
@@ -140,6 +149,17 @@ EXAMPLES = r"""
     quay_host: https://quay.example.com
     quay_token: vgfH9zH5q6eV16Con7SvDQYSr0KPYQimMHVehZv7
 
+- name: Create default read permission for team and apply to all existing repos
+  infra.quay_configuration.quay_default_perm:
+    organization: production
+    name: managers
+    type: team
+    role: read
+    apply_to_all_repositories: true
+    state: present
+    quay_host: https://quay.example.com
+    quay_token: vgfH9zH5q6eV16Con7SvDQYSr0KPYQimMHVehZv7
+
 - name: Ensure default permission for robot is removed
   infra.quay_configuration.quay_default_perm:
     organization: production
@@ -162,6 +182,7 @@ def main():
         type=dict(choices=["user", "team"], default="user"),
         role=dict(choices=["read", "write", "admin"]),
         creator=dict(),
+        apply_to_all_repositories=dict(type="bool", default=False),
         state=dict(choices=["present", "absent"], default="present"),
     )
 
@@ -174,6 +195,7 @@ def main():
     kind = module.params.get("type")
     role = module.params.get("role")
     creator = module.params.get("creator")
+    apply_to_all_repositories = module.params.get("apply_to_all_repositories")
     state = module.params.get("state")
 
     if not module.get_organization(organization):
@@ -323,32 +345,99 @@ def main():
 
     # Create the prototype
     if not prototype_details:
-        new_fields = {
-            "delegate": {"name": name, "kind": kind},
-            "role": role if role else "read",
-        }
-        if creator:
-            new_fields["activating_user"] = {"name": creator}
-        module.create(
-            "default permission",
-            name,
-            "organization/{orgname}/prototypes",
-            new_fields,
-            orgname=organization,
-        )
-
-    if not role:
-        module.exit_json(changed=False)
-
-    module.update(
+      new_fields = {
+        "delegate": {"name": name, "kind": kind},
+        "role": role if role else "read",
+      }
+      if creator:
+        new_fields["activating_user"] = {"name": creator}
+      module.create(
+        "default permission",
+        name,
+        "organization/{orgname}/prototypes",
+        new_fields,
+        auto_exit=False,
+        orgname=organization,
+      )
+    elif role:
+      # Update the existing prototype if role is specified
+      module.update(
         prototype_details,
         "default permission",
         name,
         "organization/{orgname}/prototypes/{uuid}",
         {"role": role},
+        auto_exit=False,
         orgname=organization,
         uuid=prototype_details.get("id", ""),
-    )
+      )
+
+    if not role and not prototype_details:
+      module.exit_json()
+
+    # Apply to all repositories if requested
+    repositories_updated = []
+    if apply_to_all_repositories and state == "present":
+      # Get all repositories in the organization
+      # GET /api/v1/repository?namespace={organization}
+      repositories_list = module.get_object_path(
+        "repository", query_params={"namespace": organization}
+      )
+      if repositories_list:
+        for repo in repositories_list.get("repositories", []):
+          repo_name = repo.get("name")
+          if not repo_name:
+            continue
+          full_repo_name = "{org}/{repo}".format(org=organization, repo=repo_name)
+
+          # Check current permissions and only apply if needed
+          current_role = None
+          if kind == "team":
+            # Get current team permissions for this repository
+            team_perms = module.get_object_path(
+              "repository/{full_repo_name}/permissions/team/",
+              full_repo_name=full_repo_name
+            )
+            if team_perms and team_perms.get("permissions"):
+              current_perm = team_perms["permissions"].get(name)
+              if current_perm:
+                current_role = current_perm.get("role")
+          else:  # user
+            # Get current user permissions for this repository
+            user_perms = module.get_object_path(
+              "repository/{full_repo_name}/permissions/user/",
+              full_repo_name=full_repo_name
+            )
+            if user_perms and user_perms.get("permissions"):
+              current_perm = user_perms["permissions"].get(name)
+              if current_perm:
+                current_role = current_perm.get("role")
+
+          # Only apply if the permission doesn't exist or has wrong role
+          desired_role = role or "read"
+          if current_role != desired_role:
+            if kind == "team":
+              module.unconditional_update(
+                "team repository permission",
+                name,
+                "repository/{full_repo_name}/permissions/team/{team}",
+                {"role": desired_role},
+                full_repo_name=full_repo_name,
+                team=name,
+              )
+            else:  # user
+              module.unconditional_update(
+                "user repository permission",
+                name,
+                "repository/{full_repo_name}/permissions/user/{user}",
+                {"role": desired_role},
+                full_repo_name=full_repo_name,
+                user=name,
+              )
+            repositories_updated.append(full_repo_name)
+
+    # Exit with appropriate changed status
+    module.exit_json(repositories_updated=repositories_updated)
 
 
 if __name__ == "__main__":

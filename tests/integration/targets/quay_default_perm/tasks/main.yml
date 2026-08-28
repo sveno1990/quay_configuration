@@ -291,4 +291,159 @@
     quay_host: "{{ quay_url }}"
     quay_token: "{{ quay_token }}"
     validate_certs: false
+
+# Tests for apply_to_all_repositories functionality
+- name: Create test repositories for apply_to_all_repositories testing
+  infra.quay_configuration.quay_repository:
+    name: "ansibletestorg/{{ item }}"
+    state: present
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  loop:
+    - testrepo1
+    - testrepo2
+    - testrepo3
+
+- name: Apply default read permission for ansibletestuser1 to all repositories
+  infra.quay_configuration.quay_default_perm:
+    organization: ansibletestorg
+    name: ansibletestuser1
+    type: user
+    role: read
+    apply_to_all_repositories: true
+    state: present
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: apply_all_result
+
+- name: Verify that the task reported a change (applying to existing repos)
+  ansible.builtin.assert:
+    that: apply_all_result['changed']
+    fail_msg: The task should have changed when applying to existing repositories
+
+- name: Check that ansibletestuser1 has read permission on testrepo1
+  infra.quay_configuration.quay_repository:
+    name: "ansibletestorg/testrepo1"
+    perms:
+      - name: ansibletestuser1
+        type: user
+        role: read
+    append: false
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: check_perm1
+
+- name: Verify permission was applied to testrepo1
+  ansible.builtin.assert:
+    that: not check_perm1['changed']
+    fail_msg: Permission should already exist on testrepo1
+
+- name: Check that ansibletestuser1 has read permission on testrepo2
+  infra.quay_configuration.quay_repository:
+    name: "ansibletestorg/testrepo2"
+    perms:
+      - name: ansibletestuser1
+        type: user
+        role: read
+    append: false
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: check_perm2
+
+- name: Verify permission was applied to testrepo2
+  ansible.builtin.assert:
+    that: not check_perm2['changed']
+    fail_msg: Permission should already exist on testrepo2
+
+- name: Apply default write permission for ansibletestteam1 to all repositories (update existing)
+  infra.quay_configuration.quay_default_perm:
+    organization: ansibletestorg
+    name: ansibletestteam1
+    type: team
+    role: write
+    apply_to_all_repositories: true
+    state: present
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: update_all_result
+
+- name: Verify that the task reported a change (updating permissions on existing repos)
+  ansible.builtin.assert:
+    that: update_all_result['changed']
+    fail_msg: The task should have changed when updating permissions on existing repositories
+
+- name: Check that ansibletestteam1 has write permission on testrepo1
+  infra.quay_configuration.quay_repository:
+    name: "ansibletestorg/testrepo1"
+    perms:
+      - name: ansibletestteam1
+        type: team
+        role: write
+    append: false
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: check_team_perm1
+
+- name: Verify team permission was applied to testrepo1
+  ansible.builtin.assert:
+    that: not check_team_perm1['changed']
+    fail_msg: Team permission should already exist on testrepo1
+
+- name: Apply default permission again (no change expected)
+  infra.quay_configuration.quay_default_perm:
+    organization: ansibletestorg
+    name: ansibletestteam1
+    type: team
+    role: write
+    apply_to_all_repositories: true
+    state: present
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  register: no_change_result
+
+- name: Verify that the task did not change anything
+  ansible.builtin.assert:
+    that: not no_change_result['changed']
+    fail_msg: The task should not have changed when permissions are already correct
+
+# Cleanup test repositories
+- name: Remove test repositories
+  infra.quay_configuration.quay_repository:
+    name: "ansibletestorg/{{ item }}"
+    state: absent
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+  loop:
+    - testrepo1
+    - testrepo2
+    - testrepo3
+
+# Remove the default permissions set for testing
+- name: Remove default permission for ansibletestuser1
+  infra.quay_configuration.quay_default_perm:
+    organization: ansibletestorg
+    name: ansibletestuser1
+    type: user
+    state: absent
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
+
+- name: Remove default permission for ansibletestteam1
+  infra.quay_configuration.quay_default_perm:
+    organization: ansibletestorg
+    name: ansibletestteam1
+    type: team
+    state: absent
+    quay_host: "{{ quay_url }}"
+    quay_token: "{{ quay_token }}"
+    validate_certs: false
 ...
